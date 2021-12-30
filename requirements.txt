@@ -1,2 +1,4 @@
 aiohttp==3.7.4
 Brotli==1.0.9
+psycopg2==2.9.2
+SQLAlchemy==1.4.28
