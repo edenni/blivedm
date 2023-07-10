@@ -16,7 +16,7 @@ TEST_ROOM_IDS = [
 
 async def main():
     await run_single_client()
-    await run_multi_client()
+    await run_multi_clients()
 
 
 async def run_single_client():
@@ -40,7 +40,7 @@ async def run_single_client():
         await client.stop_and_close()
 
 
-async def run_multi_client():
+async def run_multi_clients():
     """
     演示同时监听多个直播间
     """
@@ -88,4 +88,4 @@ class MyHandler(blivedm.BaseHandler):
 
 
 if __name__ == '__main__':
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())

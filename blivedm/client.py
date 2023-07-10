@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import asyncio
-import collections
 import enum
 import json
 import logging
@@ -26,7 +25,14 @@ DEFAULT_DANMAKU_SERVER_LIST = [
 ]
 
 HEADER_STRUCT = struct.Struct('>I2H2I')
-HeaderTuple = collections.namedtuple('HeaderTuple', ('pack_len', 'raw_header_size', 'ver', 'operation', 'seq_id'))
+
+
+class HeaderTuple(NamedTuple):
+    pack_len: int
+    raw_header_size: int
+    ver: int
+    operation: int
+    seq_id: int
 
 
 # WS_BODY_PROTOCOL_VERSION
@@ -85,7 +91,6 @@ class BLiveClient:
     :param session: cookie、连接池
     :param heartbeat_interval: 发送心跳包的间隔时间（秒）
     :param ssl: True表示用默认的SSLContext验证，False表示不验证，也可以传入SSLContext
-    :param loop: 协程事件循环
     """
 
     def __init__(
@@ -95,54 +100,47 @@ class BLiveClient:
         session: Optional[aiohttp.ClientSession] = None,
         heartbeat_interval=30,
         ssl: Union[bool, ssl_.SSLContext] = True,
-        loop: Optional[asyncio.BaseEventLoop] = None,
     ):
-        # 用来init_room的临时房间ID，可以用短ID
         self._tmp_room_id = room_id
+        """用来init_room的临时房间ID，可以用短ID"""
         self._uid = uid
 
-        if loop is not None:
-            self._loop = loop
-        elif session is not None:
-            self._loop = session.loop  # noqa
-        else:
-            self._loop = asyncio.get_event_loop()
-
         if session is None:
-            self._session = aiohttp.ClientSession(loop=self._loop, timeout=aiohttp.ClientTimeout(total=10))
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
             self._own_session = True
         else:
             self._session = session
             self._own_session = False
-            if self._session.loop is not self._loop:  # noqa
-                raise RuntimeError('BLiveClient and session must use the same event loop')
+            assert self._session.loop is asyncio.get_event_loop()  # noqa
 
         self._heartbeat_interval = heartbeat_interval
         self._ssl = ssl if ssl else ssl_._create_unverified_context()  # noqa
 
-        # 消息处理器，可动态增删
         self._handlers: List[handlers.HandlerInterface] = []
+        """消息处理器，可动态增删"""
 
         # 在调用init_room后初始化的字段
-        # 真实房间ID
         self._room_id = None
-        # 房间短ID，没有则为0
+        """真实房间ID"""
         self._room_short_id = None
-        # 主播用户ID
+        """房间短ID，没有则为0"""
         self._room_owner_uid = None
-        # 弹幕服务器列表
-        # [{host: "tx-bj4-live-comet-04.chat.bilibili.com", port: 2243, wss_port: 443, ws_port: 2244}, ...]
+        """主播用户ID"""
         self._host_server_list: Optional[List[dict]] = None
-        # 连接弹幕服务器用的token
+        """
+        弹幕服务器列表
+        [{host: "tx-bj4-live-comet-04.chat.bilibili.com", port: 2243, wss_port: 443, ws_port: 2244}, ...]
+        """
         self._host_server_token = None
+        """连接弹幕服务器用的token"""
 
         # 在运行时初始化的字段
-        # websocket连接
         self._websocket: Optional[aiohttp.ClientWebSocketResponse] = None
-        # 网络协程的future
+        """WebSocket连接"""
         self._network_future: Optional[asyncio.Future] = None
-        # 发心跳包定时器的handle
+        """网络协程的future"""
         self._heartbeat_timer_handle: Optional[asyncio.TimerHandle] = None
+        """发心跳包定时器的handle"""
 
     @property
     def is_running(self) -> bool:
@@ -202,7 +200,7 @@ class BLiveClient:
             logger.warning('room=%s client is running, cannot start() again', self.room_id)
             return
 
-        self._network_future = asyncio.ensure_future(self._network_coroutine_wrapper(), loop=self._loop)
+        self._network_future = asyncio.create_task(self._network_coroutine_wrapper())
 
     def stop(self):
         """
@@ -266,8 +264,17 @@ class BLiveClient:
 
     async def _init_room_id_and_owner(self):
         try:
-            async with self._session.get(ROOM_INIT_URL, params={'room_id': self._tmp_room_id},
-                                         ssl=self._ssl) as res:
+            async with self._session.get(
+                ROOM_INIT_URL,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
+                                  ' Chrome/102.0.0.0 Safari/537.36'
+                },
+                params={
+                    'room_id': self._tmp_room_id
+                },
+                ssl=self._ssl
+            ) as res:
                 if res.status != 200:
                     logger.warning('room=%d _init_room_id_and_owner() failed, status=%d, reason=%s', self._tmp_room_id,
                                    res.status, res.reason)
@@ -293,8 +300,18 @@ class BLiveClient:
 
     async def _init_host_server(self):
         try:
-            async with self._session.get(DANMAKU_SERVER_CONF_URL, params={'id': self._room_id, 'type': 0},
-                                         ssl=self._ssl) as res:
+            async with self._session.get(
+                DANMAKU_SERVER_CONF_URL,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
+                                  ' Chrome/102.0.0.0 Safari/537.36'
+                },
+                params={
+                    'id': self._room_id,
+                    'type': 0
+                },
+                ssl=self._ssl
+            ) as res:
                 if res.status != 200:
                     logger.warning('room=%d _init_host_server() failed, status=%d, reason=%s', self._room_id,
                                    res.status, res.reason)
@@ -346,7 +363,7 @@ class BLiveClient:
         except asyncio.CancelledError:
             # 正常停止
             pass
-        except Exception as e:  # noqa
+        except Exception:  # noqa
             logger.exception('room=%s _network_coroutine() finished with exception:', self.room_id)
         finally:
             logger.debug('room=%s _network_coroutine() finished', self.room_id)
@@ -368,6 +385,10 @@ class BLiveClient:
                 host_server = self._host_server_list[retry_count % len(self._host_server_list)]
                 async with self._session.ws_connect(
                     f"wss://{host_server['host']}:{host_server['wss_port']}/sub",
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
+                                      ' Chrome/102.0.0.0 Safari/537.36'
+                    },
                     receive_timeout=self._heartbeat_interval + 5,
                     ssl=self._ssl
                 ) as websocket:
@@ -399,18 +420,20 @@ class BLiveClient:
             # 准备重连
             retry_count += 1
             logger.warning('room=%d is reconnecting, retry_count=%d', self.room_id, retry_count)
-            await asyncio.sleep(1, loop=self._loop)
+            await asyncio.sleep(1)
 
     async def _on_ws_connect(self):
         """
-        websocket连接成功
+        WebSocket连接成功
         """
         await self._send_auth()
-        self._heartbeat_timer_handle = self._loop.call_later(self._heartbeat_interval, self._on_send_heartbeat)
+        self._heartbeat_timer_handle = asyncio.get_running_loop().call_later(
+            self._heartbeat_interval, self._on_send_heartbeat
+        )
 
     async def _on_ws_close(self):
         """
-        websocket连接断开
+        WebSocket连接断开
         """
         if self._heartbeat_timer_handle is not None:
             self._heartbeat_timer_handle.cancel()
@@ -421,7 +444,7 @@ class BLiveClient:
         发送认证包
         """
         auth_params = {
-            'uid': self._uid,
+            'uid': self._uid or self.room_owner_uid or 0,
             'roomid': self._room_id,
             'protover': 3,
             'platform': 'web',
@@ -439,8 +462,10 @@ class BLiveClient:
             self._heartbeat_timer_handle = None
             return
 
-        self._heartbeat_timer_handle = self._loop.call_later(self._heartbeat_interval, self._on_send_heartbeat)
-        asyncio.ensure_future(self._send_heartbeat(), loop=self._loop)
+        self._heartbeat_timer_handle = asyncio.get_running_loop().call_later(
+            self._heartbeat_interval, self._on_send_heartbeat
+        )
+        asyncio.create_task(self._send_heartbeat())
 
     async def _send_heartbeat(self):
         """
@@ -458,9 +483,9 @@ class BLiveClient:
 
     async def _on_ws_message(self, message: aiohttp.WSMessage):
         """
-        收到websocket消息
+        收到WebSocket消息
 
-        :param message: websocket消息
+        :param message: WebSocket消息
         """
         if message.type != aiohttp.WSMsgType.BINARY:
             logger.warning('room=%d unknown websocket message type=%s, data=%s', self.room_id,
@@ -477,9 +502,9 @@ class BLiveClient:
 
     async def _parse_ws_message(self, data: bytes):
         """
-        解析websocket消息
+        解析WebSocket消息
 
-        :param data: websocket消息数据
+        :param data: WebSocket消息数据
         """
         offset = 0
         try:
@@ -532,7 +557,7 @@ class BLiveClient:
             # 业务消息
             if header.ver == ProtoVer.BROTLI:
                 # 压缩过的先解压，为了避免阻塞网络线程，放在其他线程执行
-                body = await self._loop.run_in_executor(None, brotli.decompress, body)
+                body = await asyncio.get_running_loop().run_in_executor(None, brotli.decompress, body)
                 await self._parse_ws_message(body)
             elif header.ver == ProtoVer.NORMAL:
                 # 没压缩过的直接反序列化，因为有万恶的GIL，这里不能并行避免阻塞
@@ -571,11 +596,8 @@ class BLiveClient:
         # 外部代码可能不能正常处理取消，所以这里加shield
         results = await asyncio.shield(
             asyncio.gather(
-                *(handler.handle(self, command) for handler in self._handlers),
-                loop=self._loop,
-                return_exceptions=True
-            ),
-            loop=self._loop
+                *(handler.handle(self, command) for handler in self._handlers), return_exceptions=True
+            )
         )
         for res in results:
             if isinstance(res, Exception):
